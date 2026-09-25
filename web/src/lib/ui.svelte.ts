@@ -37,7 +37,7 @@ function load(): Partial<Saved> {
 class UI {
   theme = $state<Theme>('system')
   x = $state<'step' | 'time'>('step')
-  smoothing = $state(0.8)
+  smoothing = $state(0.9)
   logY = $state<Record<string, boolean>>({})
   hero = $state<Record<string, string>>({})
   selection = $state<Record<string, Selection>>({})

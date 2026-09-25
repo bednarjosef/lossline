@@ -1,16 +1,25 @@
 import uPlot from 'uplot'
 import type { MetricSeries } from './types'
 
-/** Debiased exponential moving average (the TensorBoard smoothing), skipping nulls. */
-export function ema(ys: (number | null)[], weight: number): (number | null)[] {
-  if (weight <= 0) return ys
+/**
+ * Debiased exponential moving average whose strength depends on x spacing, not point
+ * count: the same slider setting smooths a metric logged every step and one logged
+ * every 500 steps over the same stretch of the x axis. Nulls are skipped.
+ */
+export function ema(xs: number[], ys: (number | null)[], weight: number): (number | null)[] {
+  if (weight <= 0 || xs.length < 2) return ys
+  // as if the series had 1000 evenly spaced points
+  const ref = (xs[xs.length - 1] - xs[0]) / 1000 || 1
   let last = 0
-  let n = 0
-  return ys.map((y) => {
+  let norm = 0
+  let prev = xs[0]
+  return ys.map((y, i) => {
     if (y == null || !Number.isFinite(y)) return null
-    last = last * weight + (1 - weight) * y
-    n++
-    return last / (1 - Math.pow(weight, n))
+    const w = Math.pow(weight, Math.max(xs[i] - prev, ref) / ref)
+    prev = xs[i]
+    last = w * last + (1 - w) * y
+    norm = w * norm + (1 - w)
+    return last / norm
   })
 }
 
@@ -97,7 +106,7 @@ export function build(
       ys.push(y)
     }
     if (!xs.length) continue
-    let sm = ema(ys, opts.smoothing)
+    let sm = ema(xs, ys, opts.smoothing)
     if (opts.range) {
       // zoomed: sample only the visible window (plus a margin) at full detail
       const [a, b] = opts.range

@@ -11,7 +11,7 @@ from typing import Any
 from .logger import Run, current, finish, init, log
 from .reader import Reader, run_status
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 __all__ = ["Reader", "Run", "current", "finish", "init", "log", "run_status"]
 
 

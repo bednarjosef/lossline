@@ -173,3 +173,46 @@ def test_wait_and_latest(tmp_path, capsys):
     assert "reached the target" in capsys.readouterr().out
     assert main(["wait", "p/old", "--dir", str(tmp_path), "--step", "0"]) == 0
     assert main(["wait", "p/old", "--dir", str(tmp_path), "--until", "nonsense"]) == 1
+
+
+def test_wait_new_ignores_older_runs(tmp_path, capsys, monkeypatch):
+    import threading
+    import time as _time
+
+    import lossline
+    from lossline import cli
+
+    monkeypatch.setattr(cli, "NEW_RUN_GRACE", 0.0)
+    old = lossline.init(project="p", name="job", dir=tmp_path, flush_interval=0.05)
+    old.log({"loss": 1.0})
+    old.finish()
+    _time.sleep(0.05)
+
+    def launch():
+        _time.sleep(0.3)
+        run = lossline.Run(project="p", name="job", dir=tmp_path, flush_interval=0.05)
+        run.log({"loss": 0.5}, step=7)
+        run.finish(status="failed")
+
+    t = threading.Thread(target=launch)
+    t.start()
+    code = cli.main(["wait", "p/job", "--new", "--dir", str(tmp_path), "--poll", "0.05",
+                     "--timeout", "20"])
+    t.join()
+    out = capsys.readouterr().out
+    assert code == 2 and old.id not in out and "failed at step 7" in out
+
+
+def test_export_step_range(tmp_path, capsys):
+    import lossline
+    from lossline.cli import main
+
+    run = lossline.init(project="p", dir=tmp_path, flush_interval=0.05)
+    for i in range(10):
+        run.log({"loss": i}, step=i)
+    run.finish()
+    capsys.readouterr()
+    main(["export", f"p/{run.id}", "--dir", str(tmp_path), "--from", "3", "--to", "5",
+          "--format", "jsonl"])
+    steps = [json.loads(line)["_step"] for line in capsys.readouterr().out.splitlines()]
+    assert steps == [3, 4, 5]

@@ -76,7 +76,7 @@
     {#if mode === 'setup'}
       <h1>Log your first run.</h1>
       <pre><code><span class="c"># install</span>
-pip install lossline
+pip install "git+https://github.com/bednarjosef/lossline#subdirectory=python"
 
 <span class="c"># in your training script</span>
 import lossline

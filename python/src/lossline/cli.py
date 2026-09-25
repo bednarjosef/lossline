@@ -307,6 +307,34 @@ def cmd_tail(reader: Reader, args: argparse.Namespace) -> None:
 
 
 WAIT_EXIT = {"done": 0, "finished": 0, "failed": 2, "stalled": 3, "timeout": 4}
+# with --new, a run created this long before `wait` started still counts as new, so
+# launching the job first and starting `wait` a moment later doesn't miss it
+NEW_RUN_GRACE = 120.0
+
+
+def wait_for_new_run(reader: Reader, project: str, ref: str, since: float,
+                     deadline: float | None, poll: float) -> str | None:
+    """The id of the first run created after ``since`` whose id starts with ``ref``
+    (any run for ``latest``). Runs appear once their first meta.json upload lands."""
+    old: set[str] = set()
+    while True:
+        try:
+            ids = reader.run_ids(project)
+        except (SourceError, FileNotFoundError):
+            ids = []  # the project (or the whole bucket) doesn't exist yet
+        for rid in sorted(set(ids) - old):
+            if ref != "latest" and not rid.startswith(ref):
+                continue
+            try:
+                meta = reader.meta(project, rid)
+            except (FileNotFoundError, ValueError):
+                continue  # listed before its meta.json landed; look again next round
+            if _parse_time(meta.get("created")) >= since:
+                return rid
+            old.add(rid)
+        if deadline and time.time() >= deadline:
+            return None
+        time.sleep(poll)
 
 
 def parse_condition(text: str) -> tuple[str, str, float]:
@@ -334,10 +362,20 @@ def cmd_wait(reader: Reader, args: argparse.Namespace) -> int:
     Exit codes: 0 finished or condition met, 2 failed, 3 stalled, 4 timed out (1 = error).
     Made for agents: start it in the background and get woken up when something happens.
     """
-    project, run = parse_ref(args.run)
-    run = reader.resolve(project, run)
+    project, ref = parse_ref(args.run)
     conditions = [parse_condition(c) for c in args.until or []]
-    deadline = time.time() + args.timeout if args.timeout else None
+    started = time.time()
+    deadline = started + args.timeout if args.timeout else None
+    if args.new:
+        found = wait_for_new_run(reader, project, ref, started - NEW_RUN_GRACE, deadline,
+                                 min(args.poll, 10.0))
+        if found is None:
+            print(f"no new run matching {project}/{ref} appeared (timed out waiting)")
+            return WAIT_EXIT["timeout"]
+        run = found
+        print(f"waiting on {project}/{run}", flush=True)
+    else:
+        run = reader.resolve(project, ref)
     while True:
         meta = reader.meta(project, run)
         status = run_status(meta)
@@ -367,7 +405,9 @@ def format_row(row: dict[str, Any]) -> str:
 def cmd_export(reader: Reader, args: argparse.Namespace) -> None:
     project, run = parse_ref(args.run)
     run = reader.resolve(project, run)
-    rows = reader.rows(project, run)
+    rows = (r for r in reader.rows(project, run)
+            if (args.start is None or r.get("_step", 0) >= args.start)
+            and (args.end is None or r.get("_step", 0) <= args.end))
     if args.format == "jsonl":
         for row in rows:
             sys.stdout.write(json.dumps(row, separators=(",", ":")) + "\n")
@@ -413,6 +453,8 @@ examples:
   lossline tail seqmem/bold-heron -f           follow a live run
   lossline wait seqmem/latest --until 'eval/acc>=0.9' --timeout 3600
                                                block until done, failed, stalled or target
+  lossline wait seqmem/wide-lr3e-4 --new       the run just launched with that name
+  lossline export seqmem/bold-heron --from 2400 --to 2600    rows around an event
   lossline export seqmem/bold-heron --format jsonl > run.jsonl""")
     parser.add_argument("--version", action="version", version=f"lossline {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -451,14 +493,20 @@ examples:
     p.add_argument("--until", action="append", metavar="COND",
                    help="return once a metric's latest value meets COND, e.g. 'eval/acc>=0.9' "
                         "(repeatable; any one is enough)")
+    p.add_argument("--new", action="store_true",
+                   help="wait for a run that starts now: the next run whose id starts with RUN "
+                        "(the name given to init) or, for 'latest', any new run. Use right after "
+                        "launching a job; runs created up to 2 minutes earlier count")
     p.add_argument("--timeout", type=float, help="give up after this many seconds")
     p.add_argument("--poll", type=float, default=30.0,
                    help="seconds between checks (default 30; runs flush every 15)")
     p.set_defaults(func=cmd_wait)
 
-    p = sub.add_parser("export", parents=[common], help="write all rows to stdout")
+    p = sub.add_parser("export", parents=[common], help="write rows to stdout (all, or --from/--to a step range)")
     p.add_argument("run", metavar="project/run")
     p.add_argument("--format", choices=["csv", "jsonl"], default="csv")
+    p.add_argument("--from", dest="start", type=int, metavar="STEP", help="first step to include")
+    p.add_argument("--to", dest="end", type=int, metavar="STEP", help="last step to include")
     p.set_defaults(func=cmd_export)
     return parser
 

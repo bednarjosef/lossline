@@ -33,7 +33,7 @@ for step, batch in enumerate(loader):
     opt.step(); sched.step(); opt.zero_grad(set_to_none=True)
 
     running += loss.detach(); n += 1          # stays on the GPU: no sync per step
-    if rank0 and step % log_every == 0:
+    if rank0 and (step % log_every == 0 or step == len(loader) - 1):
         lossline.log({
             "train/loss": (running / n).item(),  # one sync per log_every steps
             "train/grad_norm": grad_norm.item(),

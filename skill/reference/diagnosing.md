@@ -13,8 +13,8 @@ train/grad_norm          0.8111    0.4263 @1741  7.745 @136    0.9955    ↑9.4%
 train/loss               1.679     1.348 @2241   5.354 @128    1.64      ↓3.2%     █▇▅▄▃▂▂▂▂▁▁▁▁▁▁▁
 ```
 
-- **Header:** status, last step, total rows, wall-clock time, and time since the last
-  upload. Progress is `step` against the config's planned total (`steps=6000` above: 40%).
+- **Header:** status, last step, total rows, wall-clock time from start to the last
+  upload (`ran`), and time since the last upload. Progress is `step` against the config's planned total (`steps=6000` above: 40%).
 - **last:** the most recent value, which can be noisy.
 - **min / max `@step`:** the extremes and where they happened. For a loss, `min @` shows
   where the best checkpoint probably is.
@@ -25,7 +25,9 @@ train/loss               1.679     1.348 @2241   5.354 @128    1.64      ↓3.2%
 - **history:** the whole run squeezed into 16 bars. It shows the shape: a smooth decay,
   a spike, or a rise at the end.
 
-`lossline tail <run> -n 20` shows the raw latest rows when you need exact values.
+`lossline tail <run> -n 20` shows the raw latest rows when you need exact values, and
+`lossline export <run> --from 2400 --to 2600 --format jsonl` shows the rows around an
+event anywhere in the run.
 
 ## Patterns
 
@@ -36,8 +38,8 @@ learning-rate history has the shape the schedule promises (a warmup ramp, then a
 **Divergence.** The loss trend turns `↑` and `last` climbs well above `min`. The
 gradient norm's `max` is many times its `mean10%`, often shortly before the loss jumps.
 A `-` in place of a value, or gaps in the chart, mean NaN or inf was logged. Usual causes: learning rate
-too high, missing warmup, or fp16 overflow. Say which step it started at (the `@` of the
-min, or the first bad rows from `tail`).
+too high, missing warmup, or fp16 overflow. Say which step it started at: find it with
+`export --from/--to` around the gradient-norm `max @` step.
 
 **Spikes that recover.** The gradient-norm `max` is far above its `mean10%`, but the loss
 trend is still `↓` and `last` is near `min`. This is common at a high learning rate, and

@@ -173,6 +173,14 @@
       linear-gradient(to right, var(--ground) 0%, color-mix(in srgb, var(--ground) 55%, transparent) 38%, transparent 70%),
       linear-gradient(to top, var(--ground) 6%, transparent 45%);
   }
+  @media (max-width: 700px) {
+    canvas {
+      height: 56%;
+    }
+    .veil {
+      background: linear-gradient(to top, var(--ground) 46%, transparent 64%);
+    }
+  }
   .theme {
     position: absolute;
     top: calc(env(safe-area-inset-top, 0px) + 14px);

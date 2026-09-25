@@ -102,10 +102,16 @@
     border-radius: var(--r);
     background: var(--wash);
     color: var(--ink-3);
-    transition: box-shadow 0.2s;
+    transition:
+      background 0.2s,
+      color 0.2s;
+  }
+  .search:hover,
+  .search:focus-within {
+    background: var(--wash-2);
   }
   .search:focus-within {
-    box-shadow: inset 0 0 0 1px var(--line-2);
+    color: var(--ink-2);
   }
   .search input {
     flex: 1;
@@ -114,6 +120,7 @@
     background: none;
     outline: none;
     font-size: 13px;
+    caret-color: var(--c1);
   }
   ul {
     list-style: none;

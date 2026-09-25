@@ -2,7 +2,8 @@
 
 lossline has no server. A run is a folder of plain files in a Hugging Face bucket
 (or on local disk, with the same layout). The Python logger writes it, and the web
-app and the CLI read it. Anything that can read files can read your runs.
+app and the CLI read it. By default each user has one private bucket,
+`<user>/lossline`, holding every project. Anything that can read files can read your runs.
 
 ## Layout
 
@@ -49,8 +50,12 @@ Rewritten on every flush. Readers treat unknown keys as optional.
 | `heartbeat` | last time the logger flushed. A `running` run whose heartbeat is older than `3 × flush_interval + 60` seconds is shown as **stalled** (the process probably died without saying so) |
 | `ended` | set when status becomes `finished` or `failed` |
 | `summary` | last logged value of every metric, plus `_step` |
-| `segments` | number of metric segment files |
+| `segments` | number of metric segment files; 0 until the first row is logged |
 | `rows` | total rows across all segments |
+
+`meta.json` and the last segment are uploaded together but not atomically, so
+`segments` and `rows` can briefly be ahead of the files in the bucket. Readers take the
+file listing as the truth and skip segments that don't exist yet.
 
 Times are ISO 8601 UTC with a `Z` suffix.
 
@@ -64,6 +69,7 @@ Times are ISO 8601 UTC with a `Z` suffix.
 ```
 
 - `_step` (int, non-decreasing) and `_time` (Unix seconds, float) are always present.
+  Several rows may share a `_step`; readers keep the last value per metric.
 - Every other key is a metric: a finite number. Non-finite values are written as `null`.
   A row holds only the metrics logged at that step, so metrics may be sparse.
 - Metric names may contain `/`. The part before the first `/` is the metric's group
@@ -72,7 +78,7 @@ Times are ISO 8601 UTC with a `Z` suffix.
 ### Append-only rule
 
 Only the **last** segment ever changes, and it only grows: each flush uploads it with
-the new lines appended. Once a segment passes 4 MB the logger starts the next one and
+the new lines appended. Once a segment passes 4 MiB (4,194,304 bytes) the logger starts the next one and
 never touches the old one again.
 
 This lets a reader follow a live run cheaply: remember how many bytes of the last

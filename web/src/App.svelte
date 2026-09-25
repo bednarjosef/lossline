@@ -12,7 +12,7 @@
   import Home from './components/Home.svelte'
   import ProjectView from './components/ProjectView.svelte'
 
-  let phase = $state<'boot' | 'signin' | 'pick' | 'app'>('boot')
+  let phase = $state<'boot' | 'signin' | 'setup' | 'pick' | 'app'>('boot')
   let error = $state('')
   let account = $state<Account | null>(null)
   let buckets = $state<BucketInfo[]>([])
@@ -39,12 +39,39 @@
     }
     const saved = ui.source?.kind === 'hf' ? ui.source.bucket : undefined
     if (saved) return openBucket(saved)
+    const found = await findDefault()
+    if (found) return openBucket(found)
+    phase = 'setup'
+  }
+
+  /** The user's own <name>/lossline, else one in an organization they belong to. */
+  async function findDefault(): Promise<string | null> {
+    const me = account
+    if (!me) return null
+    const own = (await listBuckets(me.name)).find((b) => b.id === `${me.name}/lossline`)
+    if (own) return own.id
+    for (const org of me.orgs) {
+      const hit = (await listBuckets(org)).find((b) => b.id === `${org}/lossline`)
+      if (hit) return hit.id
+    }
+    return null
+  }
+
+  async function loadBuckets() {
+    if (!account) return
     const owners = [account.name, ...account.orgs]
     buckets = (await Promise.all(owners.map(listBuckets))).flat().sort((a, b) => b.updated - a.updated)
-    const preferred = buckets.find((b) => b.id === `${account!.name}/lossline`) ?? buckets.find((b) => b.id.endsWith('/lossline'))
-    if (preferred) return openBucket(preferred.id)
-    phase = 'pick'
   }
+
+  // While on the setup screen, open the default bucket the moment the first run creates it.
+  $effect(() => {
+    if (phase !== 'setup') return
+    const timer = setInterval(async () => {
+      const found = await findDefault()
+      if (found && phase === 'setup') openBucket(found)
+    }, 5000)
+    return () => clearInterval(timer)
+  })
 
   async function openBucket(id: string) {
     ui.source = { kind: 'hf', bucket: id }
@@ -76,8 +103,7 @@
     store.close()
     ui.source = null
     if (!account) return leave()
-    const owners = [account.name, ...account.orgs]
-    buckets = (await Promise.all(owners.map(listBuckets))).flat().sort((a, b) => b.updated - a.updated)
+    await loadBuckets()
     router.go('#/')
     phase = 'pick'
   }
@@ -98,9 +124,9 @@
   <div in:fade={{ duration: 250 }}>
     <SignIn {error} ondemo={demo} ontoken={withToken} />
   </div>
-{:else if phase === 'pick'}
+{:else if phase === 'setup' || phase === 'pick'}
   <div in:fade={{ duration: 250 }}>
-    <BucketPicker {account} {buckets} onpick={openBucket} onsignout={leave} />
+    <BucketPicker mode={phase} {account} {buckets} onpick={openBucket} onsignout={leave} onbrowse={loadBuckets} />
   </div>
 {:else if phase === 'app'}
   <div class="app" in:fade={{ duration: 250 }}>

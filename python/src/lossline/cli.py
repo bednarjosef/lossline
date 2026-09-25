@@ -12,6 +12,7 @@ import time
 from collections import Counter
 from collections.abc import Iterable, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from . import __version__
@@ -438,6 +439,34 @@ def cmd_rm(reader: Reader, args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def cmd_push(reader: Reader, args: argparse.Namespace) -> int:
+    """Upload local run folders (a run's ./lossline/<project>/<run>) as they are on disk."""
+    code = 0
+    for folder in map(Path, args.paths):
+        meta_path = folder / "meta.json"
+        if not meta_path.is_file():
+            print(f"lossline: error: {folder} is not a run folder (no meta.json)", file=sys.stderr)
+            code = 1
+            continue
+        meta = json.loads(meta_path.read_text())
+        project, run = meta["project"], meta["id"]
+        if run_status(meta) == "running" and not args.force:
+            print(f"lossline: error: {project}/{run} looks live (recent heartbeat); its logger is "
+                  "still uploading. Wait for it to end, or pass --force", file=sys.stderr)
+            code = 1
+            continue
+        if args.mark:
+            meta["status"] = args.mark
+            meta["ended"] = meta.get("ended") or meta.get("heartbeat")
+        add = {f"{project}/{run}/meta.json": (json.dumps(meta, indent=2) + "\n").encode()}
+        for segment in sorted((folder / "metrics").glob("*.jsonl")):
+            add[f"{project}/{run}/metrics/{segment.name}"] = segment.read_bytes()
+        reader.source.apply(add, delete=[])
+        print(f"pushed {project}/{run} ({len(add) - 1} segment(s), status {meta.get('status')}) "
+              f"to {reader.source.label}")
+    return code
+
+
 def format_row(row: dict[str, Any]) -> str:
     stamp = datetime.fromtimestamp(row.get("_time", 0), timezone.utc).strftime("%H:%M:%SZ")
     metrics = " ".join(f"{k}={fmt(v)}" for k, v in row.items() if k not in ("_step", "_time"))
@@ -499,7 +528,8 @@ examples:
   lossline export seqmem/bold-heron --from 2400 --to 2600    rows around an event
   lossline mv seqmem/'lr-*' seqmem-lr-sweep     move runs to another project
   lossline rm scratch/'*'                       list what would be deleted (add --yes)
-  lossline export seqmem/bold-heron --format jsonl > run.jsonl""")
+  lossline export seqmem/bold-heron --format jsonl > run.jsonl
+  lossline push ./lossline/seqmem/bold-heron-x1y2  upload a run's local copy""")
     parser.add_argument("--version", action="version", version=f"lossline {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -543,7 +573,7 @@ examples:
                         "launching a job; runs created up to 2 minutes earlier count")
     p.add_argument("--timeout", type=float, help="give up after this many seconds")
     p.add_argument("--poll", type=float, default=30.0,
-                   help="seconds between checks (default 30; runs flush every 15)")
+                   help="seconds between checks (default 30; runs flush every 30)")
     p.set_defaults(func=cmd_wait)
 
     p = sub.add_parser("mv", parents=[common], help="move runs to another project")
@@ -558,6 +588,14 @@ examples:
                    help="a run, 'latest', or a glob such as 'scratch/*'")
     p.add_argument("--yes", action="store_true", help="really delete; this can't be undone")
     p.set_defaults(func=cmd_rm)
+
+    p = sub.add_parser("push", parents=[common],
+                       help="upload local run folders, e.g. a run whose final upload did not finish")
+    p.add_argument("paths", nargs="+", metavar="DIR", help="run folder(s): <lossline dir>/<project>/<run>")
+    p.add_argument("--mark", choices=["finished", "failed"],
+                   help="set the run's status while pushing (for runs killed before they could say)")
+    p.add_argument("--force", action="store_true", help="push even if the run looks live")
+    p.set_defaults(func=cmd_push)
 
     p = sub.add_parser("export", parents=[common], help="write rows to stdout (all, or --from/--to a step range)")
     p.add_argument("run", metavar="project/run")

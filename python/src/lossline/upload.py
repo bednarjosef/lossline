@@ -1,27 +1,38 @@
-"""Mirroring a local run folder to a Hugging Face bucket."""
+"""Mirroring a local run folder to a Hugging Face bucket.
+
+The Hugging Face calls run in a child process (see ``_upload_worker``) with a deadline per
+call, so a hung upload is killed and retried instead of blocking the run's uploads forever.
+"""
 
 from __future__ import annotations
 
 import contextlib
+import os
+import queue
 import re
+import subprocess
 import sys
 import threading
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any
 
+from . import _upload_worker as wire
 from .writer import RunFiles, segment_name
 
 MIN_BACKOFF = 5.0
 MAX_BACKOFF = 300.0
 WARN_EVERY = 300.0  # seconds between repeated failure warnings
+UPLOAD_TIMEOUT = 60.0  # seconds one upload call may take before its worker is killed
+_OFF = {"0", "false", "no", "off"}
 
 _progress_lock = threading.Lock()
 
 
 @contextlib.contextmanager
-def _quiet_progress_bars() -> Iterator[None]:
+def quiet_progress_bars() -> Iterator[None]:
     """Hide huggingface_hub's upload progress bars (they are global, so restore after)."""
     from huggingface_hub.utils import (
         are_progress_bars_disabled,
@@ -76,8 +87,112 @@ def retry_after(exc: BaseException) -> float | None:
 
 def describe(exc: BaseException) -> str:
     status = getattr(getattr(exc, "response", None), "status_code", None)
-    text = str(exc).strip().splitlines()[0] if str(exc).strip() else type(exc).__name__
-    return f"HTTP {status}: {text}" if status else f"{type(exc).__name__}: {text}"
+    name = getattr(exc, "remote_type", None) or type(exc).__name__
+    text = str(exc).strip().splitlines()[0] if str(exc).strip() else name
+    return f"HTTP {status}: {text}" if status else f"{name}: {text}"
+
+
+def ensure_bucket(api: Any, bucket_id: str) -> bool:
+    """Create the bucket if it is missing. True if it was created."""
+    from huggingface_hub.errors import HfHubHTTPError
+
+    try:
+        api.bucket_info(bucket_id)
+        return False
+    except HfHubHTTPError as exc:
+        if getattr(exc.response, "status_code", None) != 404:
+            return False
+    api.create_bucket(bucket_id, private=True, exist_ok=True)
+    return True
+
+
+class UploadTimeout(Exception):
+    """An upload call got no answer within its deadline; its worker was killed."""
+
+
+class RemoteError(Exception):
+    """An exception raised in the upload worker, with the HTTP status and rate-limit headers."""
+
+    def __init__(self, remote_type: str, message: str, status: int | None, headers: dict[str, str]):
+        super().__init__(message)
+        self.remote_type = remote_type
+        self.response = SimpleNamespace(status_code=status, headers=headers) if status or headers else None
+
+
+def worker_command() -> list[str]:
+    """How to start an upload worker (tests replace this with fake workers)."""
+    return [sys.executable, "-m", "lossline._upload_worker"]
+
+
+class WorkerTransport:
+    """Runs upload calls in a child process that is killed when a call misses its deadline.
+
+    One persistent worker (started on first use, restarted after a kill or crash). A
+    reader thread turns the worker's replies into a queue so waits can time out on every
+    platform. ``kill()`` may be called from another thread to abort the call in flight.
+    """
+
+    def __init__(self, token: str | None = None, cmd: list[str] | None = None) -> None:
+        self.cmd = cmd  # None: worker_command(), looked up on every (re)start
+        self.env = dict(os.environ)
+        if token:
+            self.env["HF_TOKEN"] = token
+        self._lock = threading.Lock()
+        self._proc: subprocess.Popen[bytes] | None = None
+        self._replies: queue.Queue[Any] | None = None
+
+    def _start(self) -> tuple[subprocess.Popen[bytes], queue.Queue[Any]]:
+        proc = subprocess.Popen(self.cmd or worker_command(), stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                env=self.env)
+        replies: queue.Queue[Any] = queue.Queue()
+
+        def pump() -> None:
+            assert proc.stdout is not None
+            try:
+                while (message := wire.recv(proc.stdout)) is not None:
+                    replies.put(message)
+            except Exception:
+                pass
+            replies.put(None)  # end of stream: the worker exited or was killed
+
+        threading.Thread(target=pump, name="lossline-upload-reader", daemon=True).start()
+        return proc, replies
+
+    def call(self, request: tuple[Any, ...], timeout: float) -> Any:
+        with self._lock:
+            if self._proc is None or self._proc.poll() is not None:
+                self._proc, self._replies = self._start()
+            proc, replies = self._proc, self._replies
+        assert replies is not None and proc.stdin is not None
+        try:
+            wire.send(proc.stdin, request)
+        except OSError as exc:
+            self.kill(proc)
+            raise ConnectionError(f"upload worker is gone ({exc})") from None
+        try:
+            reply = replies.get(timeout=timeout)
+        except queue.Empty:
+            self.kill(proc)
+            raise UploadTimeout(f"no response within {timeout:.0f}s; upload worker restarted") from None
+        if reply is None:
+            self.kill(proc)
+            raise ConnectionError("upload worker exited (aborted or crashed)")
+        if reply[0] == "ok":
+            return reply[1]
+        _, remote_type, message, status, headers = reply
+        raise RemoteError(remote_type, message, status, headers)
+
+    def kill(self, proc: subprocess.Popen[bytes] | None = None) -> None:
+        """Kill the worker (the given one, or the current one), aborting any call in flight."""
+        with self._lock:
+            target = proc or self._proc
+            if target is None:
+                return
+            if target is self._proc:
+                self._proc = None
+        with contextlib.suppress(Exception):
+            target.kill()
+            target.wait(timeout=5)
 
 
 @dataclass
@@ -94,24 +209,54 @@ class BucketSync:
     upload fails: the next attempt simply includes it again.
     """
 
-    def __init__(self, bucket_id: str, files: RunFiles, token: str | None = None) -> None:
+    def __init__(self, bucket_id: str, files: RunFiles, token: str | None = None,
+                 timeout: float | None = None, transport: WorkerTransport | None = None) -> None:
         self.bucket_id = bucket_id
         self.files = files
         self.token = token
+        self.timeout = float(timeout or os.environ.get("LOSSLINE_UPLOAD_TIMEOUT") or UPLOAD_TIMEOUT)
         self.confirmed: list[int] = []  # confirmed bytes per segment
         self.failures = 0
         self.next_attempt = 0.0
+        self.in_flight_since: float | None = None  # monotonic start of the call in progress
+        self._aborted = False
         self._last_warning = float("-inf")
         self._checked_bucket = False
-        self._api: Any = None  # huggingface_hub.HfApi, created on first use
+        # In-process HfApi: used when the worker is disabled (LOSSLINE_UPLOAD_WORKER=0) or
+        # cannot start, and injected by tests. Otherwise calls go through the worker.
+        self._api: Any = None
+        self._transport = transport
+        if transport is None and os.environ.get("LOSSLINE_UPLOAD_WORKER", "1").strip().lower() not in _OFF:
+            self._transport = WorkerTransport(token)
 
-    def _batch(self, add: list[tuple[bytes, str]]) -> None:
+    def _call(self, request: tuple[Any, ...], timeout: float | None = None) -> Any:
+        if self._api is None and self._transport is not None:
+            try:
+                return self._transport.call(request, timeout or self.timeout)
+            except OSError as exc:
+                if not isinstance(exc, ConnectionError):  # the worker could not even start
+                    print(f"lossline: upload worker unavailable ({exc}); uploading in-process "
+                          "without a timeout", file=sys.stderr)
+                    self._transport = None
+                else:
+                    raise
         if self._api is None:
             from huggingface_hub import HfApi
 
             self._api = HfApi(token=self.token)
-        with _quiet_progress_bars():
-            self._api.batch_bucket_files(self.bucket_id, add=add)
+        if request[0] == "ensure":
+            return ensure_bucket(self._api, request[1])
+        with quiet_progress_bars():
+            return self._api.batch_bucket_files(request[1], add=request[2])
+
+    def abort(self) -> None:
+        """Kill the upload in flight, if any (used by finish() so it need not wait for it)."""
+        self._aborted = True
+        if self._transport is not None:
+            self._transport.kill()
+
+    def close(self) -> None:
+        self.abort()
 
     def pending_segments(self) -> list[int]:
         confirmed = self.confirmed + [0] * (self.files.segments - len(self.confirmed))
@@ -131,20 +276,26 @@ class BucketSync:
         batch.add.append((meta, f"{self.files.prefix}/meta.json"))
         return batch
 
-    def push(self, batch: Batch) -> bool:
+    def push(self, batch: Batch, timeout: float | None = None) -> bool:
         """Upload a prepared batch in one call; returns True on success. Never raises."""
+        request = ("batch", self.bucket_id, batch.add)
+        self.in_flight_since = time.monotonic()
         try:
             try:
-                self._batch(batch.add)
+                self._call(request, timeout)
+            except UploadTimeout:
+                raise
             except Exception:
                 reset_xet_session()
                 if not self._ensure_bucket():
                     raise
-                self._batch(batch.add)
+                self._call(request, timeout)
         except Exception as exc:
             reset_xet_session()
             self._failed(exc)
             return False
+        finally:
+            self.in_flight_since = None
         self.confirmed += [0] * (len(self.files.segment_sizes) - len(self.confirmed))
         for index, size in batch.sizes.items():
             self.confirmed[index] = max(self.confirmed[index], size)
@@ -160,22 +311,17 @@ class BucketSync:
             return False
         self._checked_bucket = True
         try:
-            from huggingface_hub.errors import HfHubHTTPError
-
-            assert self._api is not None
-            try:
-                self._api.bucket_info(self.bucket_id)
+            if not self._call(("ensure", self.bucket_id)):
                 return False
-            except HfHubHTTPError as exc:
-                if getattr(exc.response, "status_code", None) != 404:
-                    return False
-            self._api.create_bucket(self.bucket_id, private=True, exist_ok=True)
         except Exception:
             return False
         print(f"lossline: created private bucket {self.bucket_id}", file=sys.stderr)
         return True
 
     def _failed(self, exc: BaseException) -> None:
+        if self._aborted:  # killed on purpose by finish(); the final upload follows
+            self._aborted = False
+            return
         self.failures += 1
         delay = min(MIN_BACKOFF * 2 ** (self.failures - 1), MAX_BACKOFF)
         wait = retry_after(exc)

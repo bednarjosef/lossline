@@ -21,8 +21,9 @@ from .values import NOT_A_NUMBER, Warner, config_to_dict, flatten, to_number
 from .writer import RunFiles
 
 FORMAT_VERSION = 1
-DEFAULT_FLUSH_INTERVAL = 15.0
-FINAL_UPLOAD_TIMEOUT = 30.0
+DEFAULT_FLUSH_INTERVAL = 30.0
+FINAL_UPLOAD_TIMEOUT = 60.0
+ABORT_AFTER = 5.0  # on finish(), an upload already running this long is killed and redone
 RESERVED_KEYS = ("_step", "_time")
 
 
@@ -87,6 +88,7 @@ class Run:
         # uploads after each local flush, so a slow network never delays local writes.
         self._stop = threading.Event()
         self._flushed = threading.Event()
+        self._final_deadline: float | None = None
         self._threads = [threading.Thread(target=self._flush_loop, name="lossline-flush",
                                           daemon=True)]
         if self._sync is not None:
@@ -148,18 +150,27 @@ class Run:
             self._finished = True
             self.status = status
             self._ended = utc_now()
+        deadline = time.monotonic() + timeout
+        self._final_deadline = deadline
         # Local files first: they are complete before any network wait.
         try:
             self._flush_local()
         finally:
             self._stop.set()  # the upload thread does one last upload and exits
             self._flushed.set()
-        deadline = time.monotonic() + timeout
+        # Don't queue the final upload behind a slow or hung one: kill it; the final upload
+        # includes everything it carried.
+        started = self._sync.in_flight_since if self._sync is not None else None
+        if started is not None and time.monotonic() - started > ABORT_AFTER:
+            self._sync.abort()
         for thread in self._threads:
             thread.join(max(0.0, deadline - time.monotonic()))
         if any(thread.is_alive() for thread in self._threads):
-            print(f"lossline: final upload did not finish within {timeout:.0f}s; "
-                  f"the run is complete in {self._files.dir}", file=sys.stderr)
+            print(f"lossline: final upload did not finish within {timeout:.0f}s; the run is "
+                  f"complete in {self._files.dir} (upload it later with: lossline push "
+                  f"{self._files.dir})", file=sys.stderr)
+        if self._sync is not None:
+            self._sync.close()
         _forget(self)
 
     @property
@@ -220,7 +231,10 @@ class Run:
         assert self._sync is not None
         with self._flush_lock:  # a consistent snapshot of segments + meta
             batch = self._sync.prepare(self._meta_bytes)
-        self._sync.push(batch)  # slow; local flushes may continue meanwhile
+        timeout = None
+        if self._final_deadline is not None:  # the final upload gets what is left of finish()'s budget
+            timeout = max(1.0, self._final_deadline - time.monotonic())
+        self._sync.push(batch, timeout)  # slow; local flushes may continue meanwhile
 
     def _flush_loop(self) -> None:
         while not self._stop.is_set():

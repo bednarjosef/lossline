@@ -32,7 +32,7 @@ Rewritten on every flush. Readers treat unknown keys as optional.
   "created": "2026-09-25T18:40:12.113Z",
   "heartbeat": "2026-09-25T19:02:47.901Z",
   "ended": null,
-  "flush_interval": 15,
+  "flush_interval": 30,
   "config": {"lr": 0.0003, "batch_size": 64},
   "summary": {"_step": 12400, "train/loss": 1.284, "eval/acc": 0.731},
   "system": {"host": "C.2581173", "gpu": "NVIDIA GeForce RTX 3090", "python": "3.12.4", "platform": "Linux-6.8"},

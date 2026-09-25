@@ -88,9 +88,11 @@ A run is a folder in the bucket:
 <project>/<run>/metrics/000000.jsonl  one JSON object per logged step
 ```
 
-The logger buffers in memory and flushes every 15 seconds from a background thread:
+The logger buffers in memory and flushes every 30 seconds from a background thread:
 it appends to the local files, then uploads `meta.json` and the growing segment in one
-request. Only the last segment ever changes, and it only grows, so the web app follows
+request. Uploads run in a small child process with a 60 second deadline per request, so a
+hung connection is killed and retried instead of silently stopping a run's uploads; if a
+run's final upload still doesn't make it, `lossline push <run folder>` uploads the local copy. Only the last segment ever changes, and it only grows, so the web app follows
 a live run with HTTP range requests for the new bytes, triggered by the bucket's change
 stream. The full format is in [docs/format.md](https://github.com/bednarjosef/lossline/blob/main/docs/format.md).
 

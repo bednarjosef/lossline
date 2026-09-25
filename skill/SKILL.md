@@ -38,6 +38,7 @@ and `latest` means the newest run in the project.
 | `lossline export <project>/<run> [--from S] [--to S] [--format csv\|jsonl]` | dump rows, or just the rows around an event |
 | `lossline mv <project>/<run> <project>` | move runs to another project (a glob like `seqmem/'lr-*'` moves several) |
 | `lossline rm <project>/<run> [--yes]` | delete runs; without `--yes` it only lists what it would delete |
+| `lossline push <run folder> [--mark finished\|failed]` | upload a run's local copy (a run whose final upload failed, or copied off a box) |
 
 `ls`, `show` and `compare` take `-m 'eval/*'` to filter metrics (repeatable, globs) and
 `--json` for machine-readable output, though the plain text is usually easier to read.
@@ -93,7 +94,7 @@ next run with that name (runs created up to 2 minutes before `wait` started coun
 
 It prints one summary line and exits with **0** when finished or the target is reached,
 **2** failed, **3** stalled, **4** timed out, **1** on an error (for example, a run name
-that doesn't match). It checks every 30 seconds by default. Runs upload every 15
+that doesn't match). It checks every 30 seconds by default. Runs upload every 30
 seconds, so checking more often gains nothing.
 
 ## Adding logging to a training script
@@ -150,9 +151,16 @@ for it (`[ -n "$HF_TOKEN" ]`) instead of displaying it.
 
 Environment variables: `LOSSLINE_BUCKET` (`owner/name`, or `none` for local only),
 `LOSSLINE_DIR` (local copy, default `./lossline`), `LOSSLINE_PROJECT` (default project),
-`LOSSLINE_FLUSH_INTERVAL` (seconds, default 15). Each flush costs 2 of the 1,000
-Hugging Face API calls a free account gets per 5 minutes. With more than about 10 runs
-at once, raise the interval to 30 or 60.
+`LOSSLINE_FLUSH_INTERVAL` (seconds, default 30), `LOSSLINE_UPLOAD_TIMEOUT` (seconds one
+upload may take before its worker process is killed and the upload retried, default 60),
+`LOSSLINE_UPLOAD_WORKER=0` (upload from a thread of the training process instead, with no
+timeout). Each flush costs 2 of the 1,000 Hugging Face API calls a free account gets per
+5 minutes. With more than about 20 runs at once, raise the interval to 60.
+
+If a run's final upload didn't finish (the logger says so and prints the folder), or a
+box was destroyed before its run reached the bucket, upload the local copy with
+`lossline push <lossline dir>/<project>/<run>`. Add `--mark failed` for a run that was
+killed without finishing.
 
 ## Reading runs from Python
 

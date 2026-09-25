@@ -14,7 +14,7 @@ Hugging Face bucket, and a static web page reads them straight from there, live.
 ## Quick start
 
 ```bash
-pip install "git+https://github.com/bednarjosef/lossline#subdirectory=python"
+pip install lossline
 ```
 
 ```python
@@ -66,7 +66,7 @@ Commands read your default bucket unless given `--bucket` or `--dir` (for local 
 
 ## For coding agents
 
-`skill/` is a Claude Code skill that teaches an agent to add lossline logging to training
+[`skill/`](https://github.com/bednarjosef/lossline/tree/main/skill) is a Claude Code skill that teaches an agent to add lossline logging to training
 code, run it on remote boxes, check on runs, wait for them, and read the curves (spotting
 divergence, plateaus, overfitting and stalled runs). Install it with:
 
@@ -92,11 +92,11 @@ The logger buffers in memory and flushes every 15 seconds from a background thre
 it appends to the local files, then uploads `meta.json` and the growing segment in one
 request. Only the last segment ever changes, and it only grows, so the web app follows
 a live run with HTTP range requests for the new bytes, triggered by the bucket's change
-stream. The full format is in [docs/format.md](docs/format.md).
+stream. The full format is in [docs/format.md](https://github.com/bednarjosef/lossline/blob/main/docs/format.md).
 
 ## Web app
 
-`web/` is a Svelte app built to static files.
+[`web/`](https://github.com/bednarjosef/lossline/tree/main/web) is a Svelte app built to static files.
 
 ```bash
 cd web

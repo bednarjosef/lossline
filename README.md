@@ -14,7 +14,7 @@ Hugging Face bucket, and a static web page reads them straight from there, live.
 ## Quick start
 
 ```bash
-pip install "git+https://github.com/bednarjosef/lossline#subdirectory=python"
+pip install lossline
 ```
 
 ```python

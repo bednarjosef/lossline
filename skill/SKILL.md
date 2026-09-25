@@ -18,7 +18,7 @@ Use `lossline` if it is on PATH. Otherwise run it without installing (`-q` hides
 install messages):
 
 ```bash
-uvx -q --from "git+https://github.com/bednarjosef/lossline#subdirectory=python" lossline ...
+uvx -q lossline ...
 ```
 
 Every command reads the user's default bucket through their Hugging Face login
@@ -135,7 +135,7 @@ jobs are in [reference/instrumenting.md](reference/instrumenting.md).
 
 ## Running on a remote or rented box
 
-1. Install on the box: `pip install "git+https://github.com/bednarjosef/lossline#subdirectory=python"`.
+1. Install on the box: `pip install lossline`.
 2. Give it a Hugging Face token with write access through the environment, never in code:
    `HF_TOKEN=... python train.py`. If the box already has `hf auth login`, nothing is needed.
    If the token is limited to an organization, also set `LOSSLINE_BUCKET=<org>/lossline`.

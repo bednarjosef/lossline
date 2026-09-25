@@ -16,6 +16,7 @@ from typing import Any
 
 from . import __version__
 from .reader import Reader, parse_lines, run_status
+from .manage import move_run, remove_run, select_runs
 from .source import SourceError, _parse_time
 from .stats import direction, fmt, metric_stats, sparkline, trend_arrow
 from .writer import segment_name
@@ -396,6 +397,47 @@ def cmd_wait(reader: Reader, args: argparse.Namespace) -> int:
     return WAIT_EXIT[outcome]
 
 
+def _slug_ok(name: str) -> bool:
+    import re
+
+    return bool(re.fullmatch(r"[a-z0-9][a-z0-9._-]{0,63}", name))
+
+
+def cmd_mv(reader: Reader, args: argparse.Namespace) -> int:
+    project, pattern = parse_ref(args.run)
+    dest = args.dest.strip("/")
+    if not _slug_ok(dest):
+        raise SourceError(f"project names are lowercase letters, digits, '.', '_' and '-': {dest!r}")
+    failed = 0
+    for run in select_runs(reader, project, pattern):
+        try:
+            move_run(reader, project, run, dest)
+            print(f"moved {project}/{run} -> {dest}/{run}", flush=True)
+        except SourceError as exc:
+            failed += 1
+            print(f"skipped {project}/{run}: {exc}", file=sys.stderr)
+    return 1 if failed else 0
+
+
+def cmd_rm(reader: Reader, args: argparse.Namespace) -> int:
+    project, pattern = parse_ref(args.run)
+    runs = select_runs(reader, project, pattern)
+    if not args.yes:
+        for run in runs:
+            print(f"would delete {project}/{run}")
+        print(f"{len(runs)} run(s). Nothing deleted; rerun with --yes to delete permanently.")
+        return 1
+    failed = 0
+    for run in runs:
+        try:
+            n = remove_run(reader, project, run)
+            print(f"deleted {project}/{run} ({n} files)", flush=True)
+        except SourceError as exc:
+            failed += 1
+            print(f"skipped {project}/{run}: {exc}", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def format_row(row: dict[str, Any]) -> str:
     stamp = datetime.fromtimestamp(row.get("_time", 0), timezone.utc).strftime("%H:%M:%SZ")
     metrics = " ".join(f"{k}={fmt(v)}" for k, v in row.items() if k not in ("_step", "_time"))
@@ -455,6 +497,8 @@ examples:
                                                block until done, failed, stalled or target
   lossline wait seqmem/wide-lr3e-4 --new       the run just launched with that name
   lossline export seqmem/bold-heron --from 2400 --to 2600    rows around an event
+  lossline mv seqmem/'lr-*' seqmem-lr-sweep     move runs to another project
+  lossline rm scratch/'*'                       list what would be deleted (add --yes)
   lossline export seqmem/bold-heron --format jsonl > run.jsonl""")
     parser.add_argument("--version", action="version", version=f"lossline {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -501,6 +545,19 @@ examples:
     p.add_argument("--poll", type=float, default=30.0,
                    help="seconds between checks (default 30; runs flush every 15)")
     p.set_defaults(func=cmd_wait)
+
+    p = sub.add_parser("mv", parents=[common], help="move runs to another project")
+    p.add_argument("run", metavar="project/run",
+                   help="a run, 'latest', or a glob such as 'seqmem/*' or 'seqmem/lr-*'")
+    p.add_argument("dest", metavar="project", help="destination project (created if new)")
+    p.set_defaults(func=cmd_mv)
+
+    p = sub.add_parser("rm", parents=[common],
+                       help="delete runs (lists them unless --yes is given)")
+    p.add_argument("run", metavar="project/run",
+                   help="a run, 'latest', or a glob such as 'scratch/*'")
+    p.add_argument("--yes", action="store_true", help="really delete; this can't be undone")
+    p.set_defaults(func=cmd_rm)
 
     p = sub.add_parser("export", parents=[common], help="write rows to stdout (all, or --from/--to a step range)")
     p.add_argument("run", metavar="project/run")

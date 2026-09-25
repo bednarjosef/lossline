@@ -57,6 +57,8 @@ lossline compare my-model/<a> my-model/<b>
 lossline tail my-model/<run> -f     # follow a live run
 lossline wait my-model/latest --until 'eval/acc>=0.9'   # block until done, failed, stalled or target
 lossline export my-model/<run> --format csv
+lossline mv my-model/'lr-*' my-model-lr-sweep   # move runs to another project
+lossline rm scratch/'*'             # lists what would be deleted; add --yes to delete
 ```
 
 Commands read your default bucket unless given `--bucket` or `--dir` (for local runs).

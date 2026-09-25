@@ -4,13 +4,18 @@ build-backend = "hatchling.build"
 
 [project]
 name = "lossline"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Experiment tracking with no server: runs are plain files in your own Hugging Face bucket."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 dependencies = ["huggingface_hub>=1.5.0"]
+keywords = ["experiment tracking", "machine learning", "training", "huggingface", "wandb"]
 classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
     "Programming Language :: Python :: 3",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -20,6 +25,12 @@ lossline = "lossline.cli:main"
 
 [dependency-groups]
 dev = ["pytest>=8"]
+
+[tool.hatch.version]
+path = "src/lossline/__init__.py"
+
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "examples", "README.md"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/lossline"]

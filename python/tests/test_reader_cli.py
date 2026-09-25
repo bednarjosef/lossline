@@ -216,3 +216,36 @@ def test_export_step_range(tmp_path, capsys):
           "--format", "jsonl"])
     steps = [json.loads(line)["_step"] for line in capsys.readouterr().out.splitlines()]
     assert steps == [3, 4, 5]
+
+
+def test_mv_and_rm(tmp_path, capsys):
+    import lossline
+    from lossline import Reader
+    from lossline.cli import main
+
+    ids = []
+    for name in ("a", "b"):
+        run = lossline.init(project="src", name=name, dir=tmp_path, flush_interval=0.05)
+        run.log({"loss": 1.0})
+        run.finish()
+        ids.append(run.id)
+    live = lossline.init(project="src", name="live", dir=tmp_path, flush_interval=0.05)
+    live.log({"loss": 1.0})
+    live._flush_local()  # meta on disk, status running
+    capsys.readouterr()
+
+    assert main(["mv", "src/*", "dst", "--dir", str(tmp_path)]) == 1  # the live run is skipped
+    out = capsys.readouterr()
+    assert all(f"moved src/{i} -> dst/{i}" in out.out for i in ids)
+    assert "still running" in out.err
+    reader = Reader(dir=tmp_path)
+    assert sorted(reader.run_ids("dst")) == sorted(ids)
+    assert reader.meta("dst", ids[0])["project"] == "dst"
+    assert reader.run_ids("src") == [live.id]
+    live.finish()
+
+    assert main(["rm", "dst/*", "--dir", str(tmp_path)]) == 1  # dry run
+    assert "Nothing deleted" in capsys.readouterr().out
+    assert len(reader.run_ids("dst")) == 2
+    assert main(["rm", "dst/*", "--dir", str(tmp_path), "--yes"]) == 0
+    assert reader.run_ids("dst") == [] and not (tmp_path / "dst").exists()

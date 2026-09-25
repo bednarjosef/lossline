@@ -36,6 +36,8 @@ and `latest` means the newest run in the project.
 | `lossline wait <project>/<run>` | block until the run ends, stalls, or hits a target |
 | `lossline tail <project>/<run> [-n N] [-f]` | show the last rows, `-f` to follow |
 | `lossline export <project>/<run> [--from S] [--to S] [--format csv\|jsonl]` | dump rows, or just the rows around an event |
+| `lossline mv <project>/<run> <project>` | move runs to another project (a glob like `seqmem/'lr-*'` moves several) |
+| `lossline rm <project>/<run> [--yes]` | delete runs; without `--yes` it only lists what it would delete |
 
 `ls`, `show` and `compare` take `-m 'eval/*'` to filter metrics (repeatable, globs) and
 `--json` for machine-readable output, though the plain text is usually easier to read.
@@ -57,6 +59,17 @@ progress.
 
 Don't guess at a run you haven't looked at, and don't tail training logs or `nohup.out`
 when the run is in lossline: the CLI is shorter and covers the whole history.
+
+## Organising runs
+
+Move runs with `lossline mv`, for example `lossline mv seqmem/'lr-*' seqmem-lr-sweep`
+to split a sweep into its own project. It keeps each run's id and history, updates its
+`meta.json`, and refuses runs that are still running (their logger would keep writing to
+the old path).
+
+Deleting is permanent: buckets have no history. Run `lossline rm <ref>` without `--yes`
+first, show the user the list it prints, and only add `--yes` once they've agreed to
+that exact list. Never delete runs on your own initiative.
 
 ## Waiting for a run
 

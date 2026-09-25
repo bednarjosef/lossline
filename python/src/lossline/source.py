@@ -1,4 +1,4 @@
-"""Read-only access to where runs live: a local directory or a Hugging Face bucket."""
+"""Access to where runs live: a local directory or a Hugging Face bucket."""
 
 from __future__ import annotations
 
@@ -14,7 +14,16 @@ from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
-USER_AGENT = "lossline/0.1.0"
+def _user_agent() -> str:
+    try:
+        from importlib.metadata import version
+
+        return f"lossline/{version('lossline')}"
+    except Exception:
+        return "lossline"
+
+
+USER_AGENT = _user_agent()
 
 
 class SourceError(Exception):
@@ -41,6 +50,10 @@ class Source(Protocol):
 
         Raises FileNotFoundError if the file does not exist.
         """
+        ...
+
+    def apply(self, add: dict[str, bytes], delete: list[str]) -> None:
+        """Write ``add`` (path -> bytes) and remove ``delete`` in one operation."""
         ...
 
 
@@ -75,6 +88,20 @@ class LocalSource:
         with open(self.root / path, "rb") as f:
             f.seek(start)
             return f.read()
+
+    def apply(self, add: dict[str, bytes], delete: list[str]) -> None:
+        for path, data in add.items():
+            target = self.root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data)
+        for path in delete:
+            (self.root / path).unlink(missing_ok=True)
+        # drop directories the deletes emptied (run folders, then empty projects)
+        for path in delete:
+            parent = (self.root / path).parent
+            while parent != self.root and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+                parent = parent.parent
 
 
 def _visible(path: Path) -> bool:
@@ -129,6 +156,19 @@ class BucketSource:
                 return b""
             raise
         return body
+
+    def apply(self, add: dict[str, bytes], delete: list[str]) -> None:
+        from huggingface_hub import HfApi
+
+        from .upload import reset_xet_session
+
+        api = HfApi(token=self.token, endpoint=self.endpoint)
+        try:
+            api.batch_bucket_files(self.bucket_id, add=[(data, path) for path, data in add.items()],
+                                   delete=delete)
+        except Exception as exc:
+            reset_xet_session()
+            raise SourceError(f"could not update {self.label}: {exc}") from exc
 
     def _get(self, url: str, extra: dict[str, str] | None = None) -> tuple[bytes, dict[str, str]]:
         headers = {"User-Agent": USER_AGENT, **(extra or {})}

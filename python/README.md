@@ -55,11 +55,27 @@ lossline ls my-model                # runs, with status and latest values
 lossline show my-model/<run>        # config, machine, per-metric stats and trends
 lossline compare my-model/<a> my-model/<b>
 lossline tail my-model/<run> -f     # follow a live run
+lossline wait my-model/latest --until 'eval/acc>=0.9'   # block until done, failed, stalled or target
 lossline export my-model/<run> --format csv
 ```
 
 Commands read your default bucket unless given `--bucket` or `--dir` (for local runs).
 `ls`, `show` and `compare` take `--json` and `-m 'eval/*'` to filter metrics.
+
+## For coding agents
+
+`skill/` is a Claude Code skill that teaches an agent to add lossline logging to training
+code, run it on remote boxes, check on runs, wait for them, and read the curves (spotting
+divergence, plateaus, overfitting and stalled runs). Install it with:
+
+```bash
+git clone https://github.com/bednarjosef/lossline
+ln -s "$PWD/lossline/skill" ~/.claude/skills/lossline
+```
+
+`lossline wait` is made for agents: start it in the background and it exits when the
+run finishes (0), fails (2), stalls (3) or times out (4), or when a target like
+`--until 'eval/acc>=0.9'` or `--step 20000` is reached (0).
 
 ## How it works
 

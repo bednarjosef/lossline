@@ -152,3 +152,24 @@ def test_follow_live_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     worker.join()
     assert [r["x"] for r in rows] == list(range(200))
     assert run_status(Reader(dir=tmp_path).meta("p", run.id)) == "finished"
+
+
+def test_wait_and_latest(tmp_path, capsys):
+    import lossline
+    from lossline.cli import main
+
+    first = lossline.init(project="p", name="old", dir=tmp_path, flush_interval=0.05)
+    first.log({"eval/acc": 0.5})
+    first.finish()
+    run = lossline.init(project="p", name="new", dir=tmp_path, flush_interval=0.05)
+    for i in range(5):
+        run.log({"eval/acc": 0.2 * i})
+    run.finish(status="failed")
+    capsys.readouterr()
+
+    assert main(["wait", "p/latest", "--dir", str(tmp_path), "--poll", "0.01"]) == 2
+    assert f"p/{run.id} failed at step 4" in capsys.readouterr().out
+    assert main(["wait", "p/latest", "--dir", str(tmp_path), "--until", "eval/acc>=0.7"]) == 0
+    assert "reached the target" in capsys.readouterr().out
+    assert main(["wait", "p/old", "--dir", str(tmp_path), "--step", "0"]) == 0
+    assert main(["wait", "p/old", "--dir", str(tmp_path), "--until", "nonsense"]) == 1

@@ -101,13 +101,19 @@ class Reader:
         return json.loads(self.source.read(f"{project}/{run}/meta.json"))
 
     def resolve(self, project: str, run: str) -> str:
-        """Accept a unique prefix of a run id (e.g. the run name) and return the full id."""
+        """Accept a unique prefix of a run id (e.g. the run name) and return the full id.
+        ``latest`` means the most recently created run in the project."""
         try:
             self.source.read(f"{project}/{run}/meta.json", 0)
             return run
         except FileNotFoundError:
             pass
         ids = self.run_ids(project)
+        if run == "latest" and not any(r.startswith("latest") for r in ids):
+            newest = self.runs(project)
+            if not newest:
+                raise SourceError(f"no runs in project {project!r}")
+            return str(newest[0]["id"])
         matches = [r for r in ids if r.startswith(run)] or [
             r for r in ids if fnmatch.fnmatch(r, run)
         ]

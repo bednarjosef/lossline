@@ -306,6 +306,58 @@ def cmd_tail(reader: Reader, args: argparse.Namespace) -> None:
         print(f"-- run {run_status(final)} --")
 
 
+WAIT_EXIT = {"done": 0, "finished": 0, "failed": 2, "stalled": 3, "timeout": 4}
+
+
+def parse_condition(text: str) -> tuple[str, str, float]:
+    """``'eval/acc>=0.9'`` -> ``('eval/acc', '>=', 0.9)``."""
+    for op in (">=", "<=", ">", "<"):
+        name, sep, value = text.partition(op)
+        if sep and name.strip() and value.strip():
+            try:
+                return name.strip(), op, float(value)
+            except ValueError:
+                break
+    raise SourceError(f"expected a condition like 'eval/acc>=0.9', got {text!r}")
+
+
+def holds(value: Any, op: str, target: float) -> bool:
+    if not isinstance(value, (int, float)):
+        return False
+    return {">=": value >= target, "<=": value <= target, ">": value > target,
+            "<": value < target}[op]
+
+
+def cmd_wait(reader: Reader, args: argparse.Namespace) -> int:
+    """Block until the run ends, stalls, or reaches --step / --until; one line, then exit.
+
+    Exit codes: 0 finished or condition met, 2 failed, 3 stalled, 4 timed out (1 = error).
+    Made for agents: start it in the background and get woken up when something happens.
+    """
+    project, run = parse_ref(args.run)
+    run = reader.resolve(project, run)
+    conditions = [parse_condition(c) for c in args.until or []]
+    deadline = time.time() + args.timeout if args.timeout else None
+    while True:
+        meta = reader.meta(project, run)
+        status = run_status(meta)
+        summary = meta.get("summary") or {}
+        step = summary.get("_step")
+        reached = (args.step is not None and isinstance(step, int) and step >= args.step) or any(
+            holds(summary.get(name), op, target) for name, op, target in conditions
+        )
+        outcome = ("done" if reached else status if status != "running"
+                   else "timeout" if deadline and time.time() >= deadline else None)
+        if outcome:
+            break
+        time.sleep(args.poll)
+    keys = [c[0] for c in conditions] or pick_key_metrics([summary])
+    values = " ".join(f"{k}={fmt(summary.get(k))}" for k in keys if k in summary)
+    what = {"done": "reached the target", "timeout": "still running (timed out waiting)"}
+    print(f"{project}/{run} {what.get(outcome, outcome)} at step {step}  {values}".rstrip())
+    return WAIT_EXIT[outcome]
+
+
 def format_row(row: dict[str, Any]) -> str:
     stamp = datetime.fromtimestamp(row.get("_time", 0), timezone.utc).strftime("%H:%M:%SZ")
     metrics = " ".join(f"{k}={fmt(v)}" for k, v in row.items() if k not in ("_step", "_time"))
@@ -350,7 +402,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="lossline", description="Inspect lossline runs stored in a HF bucket or local dir.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""Runs are referred to as <project>/<run>; a unique prefix of the run id works.
+        epilog="""Runs are referred to as <project>/<run>; a unique prefix of the run id works,
+and "latest" means the newest run in the project.
 
 examples:
   lossline ls                                  projects
@@ -358,6 +411,8 @@ examples:
   lossline show seqmem/bold-heron -m 'eval/*'  stats + sparklines for matching metrics
   lossline compare seqmem/bold-heron seqmem/calm-otter
   lossline tail seqmem/bold-heron -f           follow a live run
+  lossline wait seqmem/latest --until 'eval/acc>=0.9' --timeout 3600
+                                               block until done, failed, stalled or target
   lossline export seqmem/bold-heron --format jsonl > run.jsonl""")
     parser.add_argument("--version", action="version", version=f"lossline {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -385,6 +440,22 @@ examples:
     p.add_argument("--poll", type=float, default=5.0, help="seconds between polls with -f")
     p.set_defaults(func=cmd_tail)
 
+    p = sub.add_parser(
+        "wait", parents=[common],
+        help="block until a run ends, stalls, or reaches a step/metric target",
+        description="Exit codes: 0 finished or target reached, 2 failed, 3 stalled, "
+                    "4 timed out, 1 error.",
+    )
+    p.add_argument("run", metavar="project/run")
+    p.add_argument("--step", type=int, help="return once the run reaches this step")
+    p.add_argument("--until", action="append", metavar="COND",
+                   help="return once a metric's latest value meets COND, e.g. 'eval/acc>=0.9' "
+                        "(repeatable; any one is enough)")
+    p.add_argument("--timeout", type=float, help="give up after this many seconds")
+    p.add_argument("--poll", type=float, default=30.0,
+                   help="seconds between checks (default 30; runs flush every 15)")
+    p.set_defaults(func=cmd_wait)
+
     p = sub.add_parser("export", parents=[common], help="write all rows to stdout")
     p.add_argument("run", metavar="project/run")
     p.add_argument("--format", choices=["csv", "jsonl"], default="csv")
@@ -396,7 +467,7 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         reader = Reader(bucket=args.bucket, dir=args.dir)
-        args.func(reader, args)
+        code = args.func(reader, args)
     except (SourceError, FileNotFoundError) as exc:
         message = str(exc)
         if isinstance(exc, FileNotFoundError):
@@ -409,4 +480,4 @@ def main(argv: list[str] | None = None) -> int:
         # stdout closed early (e.g. piped into head); exit quietly
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return 0
-    return 0
+    return code or 0
